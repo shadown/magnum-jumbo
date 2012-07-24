@@ -17,6 +17,10 @@
 # include <x86intrin.h>
 #endif
 
+#ifdef __AVX__
+# include <immintrin.h>
+#endif
+
 #include "params.h"
 #include "formats.h"
 #include "memory.h"
@@ -49,9 +53,9 @@
 #define SHA1_BLOCK_WORDS        16
 #define SHA1_DIGEST_SIZE        20
 #define SHA1_DIGEST_WORDS        5
-#define SHA1_PARALLEL_HASH     512 // This must be a multiple of 4.
+#define SHA1_PARALLEL_HASH     512 // This must be divisible by 4 and 8.
 
-#define __aligned __attribute__((aligned(16)))
+#define __aligned __attribute__((aligned(32)))
 
 #ifndef __XOP__
 # define _mm_slli_epi32a(a, s)                                                                          \
@@ -64,20 +68,38 @@
     _mm_xor_si128(_mm_srli_epi16((a), (s)), _mm_slli_epi16((a), 16-(s)))
 #endif
 
-#define X(X0, X2, X8, X13) do {                                                                         \
-    X0  = _mm_xor_si128(X0, X8);                                                                        \
-    X0  = _mm_xor_si128(X0, X13);                                                                       \
-    X0  = _mm_xor_si128(X0, X2);                                                                        \
-    X0  = _mm_roti_epi32(X0, 1);                                                                        \
+#if defined(__AVX__)
+# define X(X0, X2, X8, X13) do {                                                                        \
+     X0  = _mm256_xor_si256(X0, X8);                                                                    \
+     X0  = _mm256_xor_si256(X0, X13);                                                                   \
+     X0  = _mm256_xor_si256(X0, X2);                                                                    \
+     X0  = _mm256_roti_epi32(X0, 1);                                                                    \
 } while (false)
+#else
+# define X(X0, X2, X8, X13) do {                                                                        \
+     X0  = _mm_xor_si128(X0, X8);                                                                       \
+     X0  = _mm_xor_si128(X0, X13);                                                                      \
+     X0  = _mm_xor_si128(X0, X2);                                                                       \
+     X0  = _mm_roti_epi32(X0, 1);                                                                       \
+} while (false)
+#endif
 
-#ifdef __XOP__
+#if defined(__XOP__)
 # define R1(W, A, B, C, D, E) do {                                                                      \
     E   = _mm_add_epi32(E, K);                                                                          \
     E   = _mm_add_epi32(E, _mm_cmov_si128(C, D, B));                                                    \
     E   = _mm_add_epi32(E, W);                                                                          \
     B   = _mm_roti_epi32(B, 30);                                                                        \
     E   = _mm_add_epi32(E, _mm_roti_epi32(A, 5));                                                       \
+} while (false)
+#elif defined(__AVX__)
+# define R1(W, A, B, C, D, E) do {                                                                      \
+    E   = _mm256_add_epi32(E, K);                                                                       \
+    E   = _mm256_add_epi32(E, _mm256_and_si256(C, B));                                                  \
+    E   = _mm256_add_epi32(E, _mm256_andnot_si256(B, D));                                               \
+    E   = _mm256_add_epi32(E, W);                                                                       \
+    B   = _mm256_roti_epi32(B, 30);                                                                     \
+    E   = _mm256_add_epi32(E, _mm256_roti_epi32(A, 5));                                                 \
 } while (false)
 #else
 # define R1(W, A, B, C, D, E) do {                                                                      \
@@ -90,24 +112,43 @@
 } while (false)
 #endif
 
-#define R2(W, A, B, C, D, E) do {                                                                       \
+#if defined(__AVX__)
+# define R2(W, A, B, C, D, E) do {                                                                      \
+    E   = _mm256_add_epi32(E, K);                                                                       \
+    E   = _mm256_add_epi32(E, _mm256_xor_si256(_mm256_xor_si256(B, C), D));                             \
+    E   = _mm256_add_epi32(E, W);                                                                       \
+    B   = _mm256_roti_epi32(B, 30);                                                                     \
+    E   = _mm256_add_epi32(E, _mm256_roti_epi32(A, 5));                                                 \
+} while (false)
+#else
+# define R2(W, A, B, C, D, E) do {                                                                      \
     E   = _mm_add_epi32(E, K);                                                                          \
     E   = _mm_add_epi32(E, _mm_xor_si128(_mm_xor_si128(B, C), D));                                      \
     E   = _mm_add_epi32(E, W);                                                                          \
     B   = _mm_roti_epi32(B, 30);                                                                        \
     E   = _mm_add_epi32(E, _mm_roti_epi32(A, 5));                                                       \
 } while (false)
+#endif
 
-#ifdef __XOP__
-#define R3(W, A, B, C, D, E) do {                                                                       \
+#if defined(__XOP__)
+# define R3(W, A, B, C, D, E) do {                                                                      \
     E   = _mm_add_epi32(E, K);                                                                          \
-    E   = _mm_add_epi32(E, _mm_xor_si128(_mm_cmov_si128(D, B, C), _mm_andnot_si128(D, B))); \
+    E   = _mm_add_epi32(E, _mm_xor_si128(_mm_cmov_si128(D, B, C), _mm_andnot_si128(D, B)));             \
     E   = _mm_add_epi32(E, W);                                                                          \
     B   = _mm_roti_epi32(B, 30);                                                                        \
     E   = _mm_add_epi32(E, _mm_roti_epi32(A, 5));                                                       \
 } while (false)
+#elif defined(__AVX__)
+# define R3(W, A, B, C, D, E) do {                                                                      \
+    E   = _mm256_add_epi32(E, K);                                                                       \
+    E   = _mm256_add_epi32(E, _mm256_or_si128(_mm256_and_si256(_mm_or_si256(B, D), C),                  \
+                                              _mm256_and_si256(B, D)));                                 \
+    E   = _mm256_add_epi32(E, W);                                                                       \
+    B   = _mm256_roti_epi32(B, 30);                                                                     \
+    E   = _mm256_add_epi32(E, _mm256_roti_epi32(A, 5));                                                 \
+} while (false)
 #else
-#define R3(W, A, B, C, D, E) do {                                                                       \
+# define R3(W, A, B, C, D, E) do {                                                                      \
     E   = _mm_add_epi32(E, K);                                                                          \
     E   = _mm_add_epi32(E, _mm_or_si128(_mm_and_si128(_mm_or_si128(B, D), C), _mm_and_si128(B, D)));    \
     E   = _mm_add_epi32(E, W);                                                                          \
@@ -128,10 +169,25 @@
     R3  = _mm_unpackhi_epi64(T2, T3);                                                                   \
 } while (false)
 
+#define _MM256_TRANSPOSE8_EPI32(R0, R1, R2, R3) do {                                                    \
+    __m256i T0, T1, T2, T3;                                                                             \
+    T0  = _mm256_unpacklo_epi32(R0, R1);                                                                \
+    T1  = _mm256_unpacklo_epi32(R2, R3);                                                                \
+    T2  = _mm256_unpackhi_epi32(R0, R1);                                                                \
+    T3  = _mm256_unpackhi_epi32(R2, R3);                                                                \
+    R0  = _mm256_unpacklo_epi64(T0, T1);                                                                \
+    R1  = _mm256_unpackhi_epi64(T0, T1);                                                                \
+    R2  = _mm256_unpacklo_epi64(T2, T3);                                                                \
+    R3  = _mm256_unpackhi_epi64(T2, T3);                                                                \
+} while (false)
+
 // Disable type checking for SIMD load and store operations.
 #define _mm_load_si128(x) _mm_load_si128((void *)(x))
 #define _mm_loadu_si128(x) _mm_loadu_si128((void *)(x))
 #define _mm_store_si128(x, y) _mm_store_si128((void *)(x), (y))
+#define _mm256_load_si256(x) _mm256_load_si256((void *)(x))
+#define _mm256_loadu_si256(x) _mm256_loadu_si256((void *)(x))
+#define _mm256_store_si256(x, y) _mm256_store_si256((void *)(x), (y))
 
 // These compilers claim to be __GNUC__ but warn on gcc pragmas.
 #if !defined(__INTEL_COMPILER) && !defined(__clang__)
@@ -393,6 +449,144 @@ static char * sha1_fmt_get_key(int index)
     return (char *) key;
 }
 
+#if defined(__AVX__)
+# warning using experimental intel AVX optimised 8x8 core for raw-sha1-ng
+static void sha1_fmt_crypt_all(int count)
+{
+    __m256i W[SHA1_BLOCK_WORDS];
+    __m256i A, B, C, D, E;
+    __m256i K;
+    int32_t i;
+
+    // To reduce the overhead of multiple function calls, we buffer lots of
+    // passwords, and then hash them in multiples of 8 all at once.
+    for (i = 0; i < count; i += 8) {
+        // Fetch the message, then use a 8x8 matrix transpose to shuffle them
+        // into place.
+        W[0]  = _mm256_load_si256(&M[i + 0]);
+        W[1]  = _mm256_load_si256(&M[i + 1]);
+        W[2]  = _mm256_load_si256(&M[i + 2]);
+        W[3]  = _mm256_load_si256(&M[i + 3]);
+
+        _MM256_TRANSPOSE8_EPI32(W[0],  W[1],  W[2],  W[3]);
+
+        A = _mm256_set1_epi32(0x67452301);
+        B = _mm256_set1_epi32(0xEFCDAB89);
+        C = _mm256_set1_epi32(0x98BADCFE);
+        D = _mm256_set1_epi32(0x10325476);
+        E = _mm256_set1_epi32(0xC3D2E1F0);
+        K = _mm256_set1_epi32(0x5A827999);
+
+        R1(W[0],  A, B, C, D, E);
+        R1(W[1],  E, A, B, C, D);
+        R1(W[2],  D, E, A, B, C);
+        R1(W[3],  C, D, E, A, B); W[4]  = _mm256_setzero_si256();
+        R1(W[4],  B, C, D, E, A); W[5]  = _mm256_setzero_si256();
+        R1(W[5],  A, B, C, D, E); W[6]  = _mm256_setzero_si256();   // 5
+        R1(W[6],  E, A, B, C, D); W[7]  = _mm256_setzero_si256();
+        R1(W[7],  D, E, A, B, C); W[8]  = _mm256_setzero_si256();
+        R1(W[8],  C, D, E, A, B); W[9]  = _mm256_setzero_si256();
+        R1(W[9],  B, C, D, E, A); W[10] = _mm256_setzero_si256();
+        R1(W[10], A, B, C, D, E); W[11] = _mm256_setzero_si256();   // 10
+
+        // Fetch the message lengths, we can use a 8x8 matrix transpose to
+        // shuffle the words into the correct position.
+        W[12] = _mm256_load_si256(&N[i + 0]);
+        W[13] = _mm256_load_si256(&N[i + 1]);
+        W[14] = _mm256_load_si256(&N[i + 2]);
+        W[15] = _mm256_load_si256(&N[i + 3]);
+
+        _MM256_TRANSPOSE8_EPI32(W[12], W[13], W[14], W[15]);
+
+        R1(W[11], E, A, B, C, D);
+        R1(W[12], D, E, A, B, C);
+        R1(W[13], C, D, E, A, B);
+        R1(W[14], B, C, D, E, A);
+        R1(W[15], A, B, C, D, E);                                   // 15
+
+        X(W[0],  W[2],  W[8],  W[13]);  R1(W[0],  E, A, B, C, D);
+        X(W[1],  W[3],  W[9],  W[14]);  R1(W[1],  D, E, A, B, C);
+        X(W[2],  W[4],  W[10], W[15]);  R1(W[2],  C, D, E, A, B);
+        X(W[3],  W[5],  W[11], W[0]);   R1(W[3],  B, C, D, E, A);
+
+        K = _mm256_set1_epi32(0x6ED9EBA1);
+
+        X(W[4],  W[6],  W[12], W[1]);   R2(W[4],  A, B, C, D, E);   // 20
+        X(W[5],  W[7],  W[13], W[2]);   R2(W[5],  E, A, B, C, D);
+        X(W[6],  W[8],  W[14], W[3]);   R2(W[6],  D, E, A, B, C);
+        X(W[7],  W[9],  W[15], W[4]);   R2(W[7],  C, D, E, A, B);
+        X(W[8],  W[10], W[0],  W[5]);   R2(W[8],  B, C, D, E, A);
+        X(W[9],  W[11], W[1],  W[6]);   R2(W[9],  A, B, C, D, E);   // 25
+        X(W[10], W[12], W[2],  W[7]);   R2(W[10], E, A, B, C, D);
+        X(W[11], W[13], W[3],  W[8]);   R2(W[11], D, E, A, B, C);
+        X(W[12], W[14], W[4],  W[9]);   R2(W[12], C, D, E, A, B);
+        X(W[13], W[15], W[5],  W[10]);  R2(W[13], B, C, D, E, A);
+        X(W[14], W[0],  W[6],  W[11]);  R2(W[14], A, B, C, D, E);   // 30
+        X(W[15], W[1],  W[7],  W[12]);  R2(W[15], E, A, B, C, D);
+        X(W[0],  W[2],  W[8],  W[13]);  R2(W[0],  D, E, A, B, C);
+        X(W[1],  W[3],  W[9],  W[14]);  R2(W[1],  C, D, E, A, B);
+        X(W[2],  W[4],  W[10], W[15]);  R2(W[2],  B, C, D, E, A);
+        X(W[3],  W[5],  W[11], W[0]);   R2(W[3],  A, B, C, D, E);   // 35
+        X(W[4],  W[6],  W[12], W[1]);   R2(W[4],  E, A, B, C, D);
+        X(W[5],  W[7],  W[13], W[2]);   R2(W[5],  D, E, A, B, C);
+        X(W[6],  W[8],  W[14], W[3]);   R2(W[6],  C, D, E, A, B);
+        X(W[7],  W[9],  W[15], W[4]);   R2(W[7],  B, C, D, E, A);
+
+        K = _mm256_set1_epi32(0x8F1BBCDC);
+
+        X(W[8],  W[10], W[0],  W[5]);   R3(W[8],  A, B, C, D, E);   // 40
+        X(W[9],  W[11], W[1],  W[6]);   R3(W[9],  E, A, B, C, D);
+        X(W[10], W[12], W[2],  W[7]);   R3(W[10], D, E, A, B, C);
+        X(W[11], W[13], W[3],  W[8]);   R3(W[11], C, D, E, A, B);
+        X(W[12], W[14], W[4],  W[9]);   R3(W[12], B, C, D, E, A);
+        X(W[13], W[15], W[5],  W[10]);  R3(W[13], A, B, C, D, E);   // 45
+        X(W[14], W[0],  W[6],  W[11]);  R3(W[14], E, A, B, C, D);
+        X(W[15], W[1],  W[7],  W[12]);  R3(W[15], D, E, A, B, C);
+        X(W[0],  W[2],  W[8],  W[13]);  R3(W[0],  C, D, E, A, B);
+        X(W[1],  W[3],  W[9],  W[14]);  R3(W[1],  B, C, D, E, A);
+        X(W[2],  W[4],  W[10], W[15]);  R3(W[2],  A, B, C, D, E);   // 50
+        X(W[3],  W[5],  W[11], W[0]);   R3(W[3],  E, A, B, C, D);
+        X(W[4],  W[6],  W[12], W[1]);   R3(W[4],  D, E, A, B, C);
+        X(W[5],  W[7],  W[13], W[2]);   R3(W[5],  C, D, E, A, B);
+        X(W[6],  W[8],  W[14], W[3]);   R3(W[6],  B, C, D, E, A);
+        X(W[7],  W[9],  W[15], W[4]);   R3(W[7],  A, B, C, D, E);   // 55
+        X(W[8],  W[10], W[0],  W[5]);   R3(W[8],  E, A, B, C, D);
+        X(W[9],  W[11], W[1],  W[6]);   R3(W[9],  D, E, A, B, C);
+        X(W[10], W[12], W[2],  W[7]);   R3(W[10], C, D, E, A, B);
+        X(W[11], W[13], W[3],  W[8]);   R3(W[11], B, C, D, E, A);
+
+        K = _mm256_set1_epi32(0xCA62C1D6);
+
+        X(W[12], W[14], W[4],  W[9]);   R2(W[12], A, B, C, D, E);   // 60
+        X(W[13], W[15], W[5],  W[10]);  R2(W[13], E, A, B, C, D);
+        X(W[14], W[0],  W[6],  W[11]);  R2(W[14], D, E, A, B, C);
+        X(W[15], W[1],  W[7],  W[12]);  R2(W[15], C, D, E, A, B);
+        X(W[0],  W[2],  W[8],  W[13]);  R2(W[0],  B, C, D, E, A);
+        X(W[1],  W[3],  W[9],  W[14]);  R2(W[1],  A, B, C, D, E);   // 65
+        X(W[2],  W[4],  W[10], W[15]);  R2(W[2],  E, A, B, C, D);
+        X(W[3],  W[5],  W[11], W[0]);   R2(W[3],  D, E, A, B, C);
+        X(W[4],  W[6],  W[12], W[1]);   R2(W[4],  C, D, E, A, B);
+        X(W[5],  W[7],  W[13], W[2]);   R2(W[5],  B, C, D, E, A);
+        X(W[6],  W[8],  W[14], W[3]);   R2(W[6],  A, B, C, D, E);   // 70
+        X(W[7],  W[9],  W[15], W[4]);   R2(W[7],  E, A, B, C, D);
+        X(W[8],  W[10], W[0],  W[5]);   R2(W[8],  D, E, A, B, C);
+        X(W[9],  W[11], W[1],  W[6]);   R2(W[9],  C, D, E, A, B);
+        X(W[10], W[12], W[2],  W[7]);   R2(W[10], B, C, D, E, A);
+        X(W[11], W[13], W[3],  W[8]);   R2(W[11], A, B, C, D, E);   // 75
+
+        // A75 has an interesting property, it is the first word that is (almost)
+        // part of the final MD (E79 ror 2). The common case will be that this
+        // doesn't match, so we stop here and save 5 rounds.
+        //
+        // Note that I'm using E due to the displacement caused by vectorization,
+        // this is A in standard SHA-1.
+        _mm256_store_si256(&MD[i], E);
+    }
+    return;
+}
+
+#else
+
 static void sha1_fmt_crypt_all(int count)
 {
     __m128i W[SHA1_BLOCK_WORDS];
@@ -526,6 +720,8 @@ static void sha1_fmt_crypt_all(int count)
     }
     return;
 }
+
+#endif
 
 #if defined(__SSE4_1__)
 
